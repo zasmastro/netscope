@@ -8,7 +8,7 @@ import (
 
 const (
 	name    = "netscope"
-	version = "0.3.1"
+	version = "0.3.2"
 	author  = "cortex"
 	repo    = "https://github.com/zasmastro/netscope"
 )
