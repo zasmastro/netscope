@@ -93,7 +93,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detailView = false
 				m.detailHost = nil
 			case "q", "ctrl+c":
-				m.writeJSONIfRequested()
+				m.writeReportIfRequested()
 				return m, tea.Quit
 			}
 			return m, nil
@@ -101,7 +101,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
-			m.writeJSONIfRequested()
+			m.writeReportIfRequested()
 			return m, tea.Quit
 		case "up", "k":
 			if m.selected > 0 {
@@ -153,7 +153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) writeJSONIfRequested() {
+func (m *model) writeReportIfRequested() {
 	if m.outFile == "" {
 		return
 	}
@@ -161,7 +161,14 @@ func (m *model) writeJSONIfRequested() {
 	for _, h := range m.hosts {
 		entries = append(entries, *h)
 	}
-	data := buildJSON(m.cidr, entries)
+
+	var data string
+	if strings.HasSuffix(strings.ToLower(m.outFile), ".html") {
+		data = buildHTML(m.cidr, entries)
+	} else {
+		data = buildJSON(m.cidr, entries)
+	}
+
 	if err := os.WriteFile(m.outFile, []byte(data), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", m.outFile, err)
 	}
