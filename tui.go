@@ -65,14 +65,16 @@ type model struct {
 	width      int
 	detailView bool
 	detailHost *hostEntry
+	outFile    string
 }
 
-func newModel(cidr string, total int) model {
+func newModel(cidr string, total int, outFile string) model {
 	return model{
-		cidr:  cidr,
-		total: total,
-		byIP:  make(map[string]*hostEntry),
-		start: time.Now(),
+		cidr:    cidr,
+		total:   total,
+		byIP:    make(map[string]*hostEntry),
+		start:   time.Now(),
+		outFile: outFile,
 	}
 }
 
@@ -85,21 +87,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 
 	case tea.KeyMsg:
-		// detail view keys
 		if m.detailView {
 			switch msg.String() {
 			case "esc", "backspace", "left":
 				m.detailView = false
 				m.detailHost = nil
 			case "q", "ctrl+c":
+				m.writeJSONIfRequested()
 				return m, tea.Quit
 			}
 			return m, nil
 		}
 
-		// table view keys
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
+			m.writeJSONIfRequested()
 			return m, tea.Quit
 		case "up", "k":
 			if m.selected > 0 {
@@ -149,6 +151,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	m.elapsed = time.Since(m.start)
 	return m, nil
+}
+
+func (m *model) writeJSONIfRequested() {
+	if m.outFile == "" {
+		return
+	}
+	entries := make([]hostEntry, 0, len(m.hosts))
+	for _, h := range m.hosts {
+		entries = append(entries, *h)
+	}
+	data := buildJSON(m.cidr, entries)
+	if err := os.WriteFile(m.outFile, []byte(data), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", m.outFile, err)
+	}
 }
 
 func (m model) View() string {
@@ -240,7 +256,12 @@ func (m model) tableViewRender() string {
 	}
 	b.WriteString(styleStatus.Render(fmt.Sprintf("  %d hosts · %d open ports · %.1fs",
 		len(m.hosts), portCount, m.elapsed.Seconds())) + "\n")
-	b.WriteString("  " + styleDim.Render("[↑↓] navigate   [enter] details   [q] quit") + "\n")
+
+	hint := "[↑↓] navigate   [enter] details   [q] quit"
+	if m.outFile != "" {
+		hint = "[↑↓] navigate   [enter] details   [q] quit + save → " + m.outFile
+	}
+	b.WriteString("  " + styleDim.Render(hint) + "\n")
 
 	return b.String()
 }
@@ -249,25 +270,20 @@ func (m model) detailViewRender() string {
 	h := m.detailHost
 	var b strings.Builder
 
-	// header
 	b.WriteString(styleTitle.Render("netscope") + " " + styleDim.Render(version) +
 		"  " + styleCredit.Render("by "+author+" · "+repo) + "\n\n")
 
-	// host title
 	b.WriteString(styleOS.Render("  "+h.ip) + "  " + styleUp.Render("● up") + "\n")
 
-	// metadata
 	b.WriteString(styleDim.Render(fmt.Sprintf("  first seen: %s   scanned in: %s",
 		h.firstSeen.Format("15:04:05"), h.scanTime.Round(time.Millisecond))) + "\n")
 
-	// OS guess
 	guess := guessOS(h)
 	if guess != "" {
 		b.WriteString(styleOS.Render("  likely OS: ") + guess + "\n")
 	}
 	b.WriteString("\n")
 
-	// ports table
 	b.WriteString(fmt.Sprintf("  %-8s %-14s %s\n",
 		styleHeader.Render("PORT"),
 		styleHeader.Render("SERVICE"),
@@ -302,7 +318,6 @@ func (m model) detailViewRender() string {
 	return b.String()
 }
 
-// guessOS looks at open ports + banners to make a best-effort guess
 func guessOS(h *hostEntry) string {
 	ports := make(map[int]bool)
 	for _, p := range h.ports {
@@ -311,7 +326,6 @@ func guessOS(h *hostEntry) string {
 
 	banners := strings.ToLower(strings.Join(bannerValues(h), " "))
 
-	// Windows signals: RPC (135), NetBIOS (139), SMB (445), WinRM (5985), RDP (3389)
 	windowsScore := 0
 	if ports[135] {
 		windowsScore += 2
@@ -329,7 +343,6 @@ func guessOS(h *hostEntry) string {
 		windowsScore += 2
 	}
 
-	// Linux/Unix signals: SSH with OpenSSH banner
 	linuxScore := 0
 	if ports[22] && strings.Contains(banners, "openssh") {
 		linuxScore += 4
@@ -350,7 +363,6 @@ func guessOS(h *hostEntry) string {
 		linuxScore += 1
 	}
 
-	// macOS signals
 	macScore := 0
 	if strings.Contains(banners, "darwin") {
 		macScore += 5
@@ -359,12 +371,10 @@ func guessOS(h *hostEntry) string {
 		macScore += 5
 	}
 
-	// Network device signals: DNS + web only, no SSH
 	if ports[53] && !ports[22] {
 		return "network device (router / switch)"
 	}
 
-	// Score compare
 	max := func(a, b, c int) (string, int) {
 		if a >= b && a >= c {
 			return "Windows", a
@@ -390,14 +400,14 @@ func bannerValues(h *hostEntry) []string {
 	return out
 }
 
-func runTUI(cidr string) {
+func runTUI(cidr string, outFile string) {
 	hosts, err := expandCIDR(cidr)
 	if err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
 
-	m := newModel(cidr, len(hosts))
+	m := newModel(cidr, len(hosts), outFile)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	go func() {
