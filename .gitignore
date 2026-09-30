@@ -5,3 +5,5 @@ netscope
 !go.sum
 .vscode/
 .idea/
+report.json
+report.html
