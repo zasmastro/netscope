@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -233,4 +234,86 @@ func scanHostStream(host string, onPort func(port int, banner string)) {
 		}(p)
 	}
 	wg.Wait()
+}
+
+func escapeJSON(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 32 {
+				b.WriteString(fmt.Sprintf(`\u%04x`, r))
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+func buildJSON(target string, hosts []hostEntry) string {
+	var b strings.Builder
+
+	b.WriteString("{\n")
+	b.WriteString(fmt.Sprintf("  \"tool\": {\"name\": %q, \"version\": %q, \"author\": %q, \"repo\": %q},\n",
+		name, version, author, repo))
+	b.WriteString(fmt.Sprintf("  \"scanned_at\": %q,\n", time.Now().UTC().Format(time.RFC3339)))
+	b.WriteString(fmt.Sprintf("  \"target\": %q,\n", target))
+	b.WriteString("  \"hosts\": [\n")
+
+	for i, h := range hosts {
+		b.WriteString("    {\n")
+		b.WriteString(fmt.Sprintf("      \"ip\": %q,\n", h.ip))
+		b.WriteString("      \"status\": \"up\",\n")
+
+		guess := guessOS(&h)
+		if guess != "" {
+			b.WriteString(fmt.Sprintf("      \"os_guess\": %q,\n", guess))
+		}
+
+		b.WriteString("      \"ports\": [")
+		if len(h.ports) == 0 {
+			b.WriteString("]\n")
+		} else {
+			b.WriteString("\n")
+			for j, p := range h.ports {
+				svc := portNames[p]
+				banner := h.banners[p]
+				b.WriteString("        {")
+				b.WriteString(fmt.Sprintf("\"port\": %d", p))
+				if svc != "" {
+					b.WriteString(fmt.Sprintf(", \"service\": %q", svc))
+				}
+				if banner != "" {
+					b.WriteString(fmt.Sprintf(", \"banner\": %q", escapeJSON(banner)))
+				}
+				b.WriteString("}")
+				if j+1 < len(h.ports) {
+					b.WriteString(",")
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("      ]\n")
+		}
+
+		b.WriteString("    }")
+		if i+1 < len(hosts) {
+			b.WriteString(",")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("  ]\n")
+	b.WriteString("}\n")
+	return b.String()
 }
