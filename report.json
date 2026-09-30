@@ -1,6 +1,6 @@
 {
   "tool": {"name": "netscope", "version": "0.3.1", "author": "cortex", "repo": "https://github.com/zasmastro/netscope"},
-  "scanned_at": "2026-09-30T16:55:45Z",
+  "scanned_at": "2026-09-30T17:01:41Z",
   "target": "192.168.1.0/24",
   "hosts": [
     {
@@ -8,9 +8,9 @@
       "status": "up",
       "os_guess": "Windows",
       "ports": [
-        {"port": 139, "service": "netbios"},
         {"port": 445, "service": "smb"},
-        {"port": 135, "service": "rpc"}
+        {"port": 135, "service": "rpc"},
+        {"port": 139, "service": "netbios"}
       ]
     },
     {
