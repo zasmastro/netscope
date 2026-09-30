@@ -10,76 +10,74 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// --- styles ---
-
 var (
-	styleTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	styleCredit  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	styleHeader  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	styleUp      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
-	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Background(lipgloss.Color("236"))
-	stylePort    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	styleStatus  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	styleTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	styleCredit   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	styleUp       = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226"))
+	stylePort     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	styleStatus   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	styleArrow    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	styleBar      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
 )
 
-// --- messages (what the scanner sends back into the model) ---
-
-type hostFoundMsg struct {
-	host string
+// port names — quick lookup so we show "ssh" instead of raw banners
+var portNames = map[int]string{
+	21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns",
+	80: "http", 110: "pop3", 135: "rpc", 139: "netbios", 143: "imap",
+	443: "https", 445: "smb", 993: "imaps", 995: "pop3s",
+	1433: "mssql", 1521: "oracle", 3306: "mysql", 3389: "rdp",
+	5432: "postgres", 5900: "vnc", 5985: "winrm", 6379: "redis",
+	8080: "http-alt", 8443: "https-alt", 9000: "http-alt", 27017: "mongo",
 }
 
+type hostFoundMsg struct{ host string }
+type hostDoneMsg struct{ host string }
 type portsFoundMsg struct {
-	host string
-	port int
+	host   string
+	port   int
 	banner string
 }
-
 type scanDoneMsg struct{}
 
-// --- model ---
-
 type hostEntry struct {
-	ip     string
-	ports  []int
+	ip      string
+	ports   []int
 	banners map[int]string
-	done   bool
+	done    bool
 }
 
 type model struct {
-	cidr      string
-	total     int
-	scanned   int
-	hosts     []*hostEntry
-	byIP      map[string]*hostEntry
-	selected  int
-	start     time.Time
-	elapsed   time.Duration
-	done      bool
-	width     int
-	height    int
+	cidr     string
+	total    int
+	scanned  int
+	hosts    []*hostEntry
+	byIP     map[string]*hostEntry
+	selected int
+	start    time.Time
+	elapsed  time.Duration
+	done     bool
+	width    int
 }
 
-func newModel(cidr string) model {
+func newModel(cidr string, total int) model {
 	return model{
-		cidr:    cidr,
-		byIP:    make(map[string]*hostEntry),
-		start:   time.Now(),
+		cidr:  cidr,
+		total: total,
+		byIP:  make(map[string]*hostEntry),
+		start: time.Now(),
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return scanCmd(m.cidr)
-}
-
-// --- update ---
+func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -108,6 +106,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case hostDoneMsg:
+		if h, ok := m.byIP[msg.host]; ok {
+			h.done = true
+			m.scanned++
+		}
+
 	case scanDoneMsg:
 		m.done = true
 		for _, h := range m.hosts {
@@ -119,75 +123,77 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// --- view ---
-
 func (m model) View() string {
 	var b strings.Builder
 
 	// header
-	title := styleTitle.Render("netscope")
-	version := styleDim.Render(" " + version)
-	credit := styleCredit.Render("by " + author + "  ·  " + repo)
-	b.WriteString(title + version + strings.Repeat(" ", max(0, m.width-len("netscope "+version+"by "+author+"  ·  "+repo))) + credit + "\n")
+	b.WriteString(styleTitle.Render("netscope") + " " + styleDim.Render(version) +
+		"  " + styleCredit.Render("by "+author+" · "+repo) + "\n")
 
-	// progress line
+	// progress
 	var progress string
 	if m.done {
-		progress = styleUp.Render("done")
+		progress = styleUp.Render("● done")
 	} else {
 		pct := 0.0
 		if m.total > 0 {
 			pct = float64(m.scanned) / float64(m.total)
 		}
 		filled := int(pct * 20)
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
-		progress = styleStatus.Render(bar) + " " + fmt.Sprintf("%d%%", int(pct*100))
+		bar := styleBar.Render(strings.Repeat("█", filled)) +
+			styleDim.Render(strings.Repeat("░", 20-filled))
+		progress = bar + " " + fmt.Sprintf("%3d%%", int(pct*100))
 	}
 	b.WriteString("  " + styleDim.Render("scanning "+m.cidr) + "  " + progress + "\n\n")
 
-	// header row
-	header := fmt.Sprintf("  %-18s %-10s %-24s %s",
+	// table header
+	b.WriteString(fmt.Sprintf("  %-18s %-9s %-24s %s\n",
 		styleHeader.Render("HOST"),
 		styleHeader.Render("STATUS"),
 		styleHeader.Render("PORTS"),
-		styleHeader.Render("SERVICES"))
-	b.WriteString(header + "\n")
-	b.WriteString("  " + strings.Repeat("─", max(0, m.width-4)) + "\n")
+		styleHeader.Render("SERVICES")))
+	b.WriteString("  " + styleDim.Render(strings.Repeat("─", 74)) + "\n")
 
-	// host rows
+	if len(m.hosts) == 0 {
+		b.WriteString(styleDim.Render("  waiting for hosts…") + "\n")
+	}
+
 	for i, h := range m.hosts {
-		var status, ports, services string
+		arrow := "  "
+		if i == m.selected {
+			arrow = styleArrow.Render("> ")
+		}
+
+		status := stylePort.Render("◐ scan")
 		if h.done {
 			status = styleUp.Render("● up")
-		} else {
-			status = stylePort.Render("◐ scan")
 		}
+
 		portStrs := make([]string, len(h.ports))
 		for j, p := range h.ports {
 			portStrs[j] = fmt.Sprintf("%d", p)
 		}
-		ports = strings.Join(portStrs, ", ")
+		ports := strings.Join(portStrs, ", ")
 		if len(ports) > 22 {
 			ports = ports[:22] + "…"
 		}
 		if ports == "" {
 			if h.done {
-				ports = styleDim.Render("none")
+				ports = styleDim.Render("—")
 			} else {
 				ports = styleDim.Render("…")
 			}
 		}
+
 		svcStrs := []string{}
 		for _, p := range h.ports {
-			if b, ok := h.banners[p]; ok {
-				svcStrs = append(svcStrs, truncate(b, 24))
-			} else {
-				svcStrs = append(svcStrs, "")
+			if name, ok := portNames[p]; ok {
+				svcStrs = append(svcStrs, name)
 			}
 		}
-		services = strings.Join(svcStrs, ", ")
+		services := strings.Join(svcStrs, ", ")
 
-		row := fmt.Sprintf("  %-18s %-10s %-24s %s", h.ip, status, ports, services)
+		row := fmt.Sprintf("%s%-18s %-9s %-24s %s", arrow, h.ip, status, ports, services)
 		if i == m.selected {
 			row = styleSelected.Render(row)
 		}
@@ -196,55 +202,17 @@ func (m model) View() string {
 
 	b.WriteString("\n")
 
-	// status bar
 	portCount := 0
 	for _, h := range m.hosts {
 		portCount += len(h.ports)
 	}
-	statusLine := fmt.Sprintf("  %d hosts · %d open ports · %.1fs",
-		len(m.hosts), portCount, m.elapsed.Seconds())
-	b.WriteString(styleStatus.Render(statusLine) + "\n")
-
-	// help bar
-	help := "  " + styleDim.Render("[↑↓] navigate   [q] quit")
-	b.WriteString(help + "\n")
+	b.WriteString(styleStatus.Render(fmt.Sprintf("  %d hosts · %d open ports · %.1fs",
+		len(m.hosts), portCount, m.elapsed.Seconds())) + "\n")
+	b.WriteString("  " + styleDim.Render("[↑↓] navigate   [q] quit") + "\n")
 
 	return b.String()
 }
 
-// --- helpers ---
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
-// --- commands (run in background goroutines, push msgs into the UI) ---
-
-func scanCmd(cidr string) tea.Cmd {
-	return func() tea.Msg {
-		hosts, err := expandCIDR(cidr)
-		if err != nil {
-			return scanDoneMsg{}
-		}
-		go func() {
-			// we need to share the model pointer, so this is handled in runTUI instead
-			_ = hosts
-		}()
-		return nil
-	}
-}
-
-// runTUI is the entry point called from main.go
 func runTUI(cidr string) {
 	hosts, err := expandCIDR(cidr)
 	if err != nil {
@@ -252,62 +220,48 @@ func runTUI(cidr string) {
 		os.Exit(1)
 	}
 
-	m := newModel(cidr)
-	m.total = len(hosts)
-
+	m := newModel(cidr, len(hosts))
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	// background scanner: pushes hostFoundMsg / portsFoundMsg into the program
 	go func() {
-		// stream hosts
-		results := make(chan string, len(hosts))
+		found := make(chan string, len(hosts))
+
 		go func() {
 			sweepStream(hosts, func(host string) {
-				results <- host
+				found <- host
 			})
-			close(results)
+			close(found)
 		}()
 
-		found := []string{}
-		for h := range results {
-			found = append(found, h)
+		var live []string
+		for h := range found {
+			live = append(live, h)
 			p.Send(hostFoundMsg{host: h})
 		}
 
-		// now scan ports on each host concurrently, streaming results
-		portResults := make(chan portsFoundMsg, 4096)
-		done := make(chan struct{})
-		go func() {
-			for _, h := range found {
-				go scanHostStream(h, func(port int, banner string) {
-					portResults <- portsFoundMsg{host: h, port: port, banner: banner}
+		portCh := make(chan portsFoundMsg, 4096)
+		doneCh := make(chan string, len(live))
+
+		for _, h := range live {
+			go func(host string) {
+				scanHostStream(host, func(port int, banner string) {
+					portCh <- portsFoundMsg{host: host, port: port, banner: banner}
 				})
+				doneCh <- host
+			}(h)
+		}
+
+		doneCount := 0
+		for doneCount < len(live) {
+			select {
+			case pr := <-portCh:
+				p.Send(pr)
+			case host := <-doneCh:
+				p.Send(hostDoneMsg{host: host})
+				doneCount++
 			}
-			// wait for all scans to finish
-			// simplified: sleep briefly then signal done
-			// (the real completion tracking happens per-host below)
-		}()
+		}
 
-		go func() {
-			// consume port results as they arrive
-			timeout := time.After(30 * time.Second)
-			remaining := len(found)
-			perHostDone := make(map[string]chan struct{})
-			_ = perHostDone
-			_ = remaining
-
-			for {
-				select {
-				case pr := <-portResults:
-					p.Send(pr)
-				case <-timeout:
-					close(done)
-					return
-				}
-			}
-		}()
-
-		<-done
 		p.Send(scanDoneMsg{})
 	}()
 

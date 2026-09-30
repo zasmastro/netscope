@@ -1,3 +1,7 @@
 netscope.exe
 netscope
 *.log
+*.txt
+!go.sum
+.vscode/
+.idea/
