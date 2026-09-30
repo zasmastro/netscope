@@ -21,9 +21,10 @@ var (
 	styleStatus   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	styleArrow    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	styleBar      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	styleOS       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("213"))
+	styleBanner   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 )
 
-// port names — quick lookup so we show "ssh" instead of raw banners
 var portNames = map[int]string{
 	21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns",
 	80: "http", 110: "pop3", 135: "rpc", 139: "netbios", 143: "imap",
@@ -43,23 +44,27 @@ type portsFoundMsg struct {
 type scanDoneMsg struct{}
 
 type hostEntry struct {
-	ip      string
-	ports   []int
-	banners map[int]string
-	done    bool
+	ip        string
+	ports     []int
+	banners   map[int]string
+	done      bool
+	firstSeen time.Time
+	scanTime  time.Duration
 }
 
 type model struct {
-	cidr     string
-	total    int
-	scanned  int
-	hosts    []*hostEntry
-	byIP     map[string]*hostEntry
-	selected int
-	start    time.Time
-	elapsed  time.Duration
-	done     bool
-	width    int
+	cidr       string
+	total      int
+	scanned    int
+	hosts      []*hostEntry
+	byIP       map[string]*hostEntry
+	selected   int
+	start      time.Time
+	elapsed    time.Duration
+	done       bool
+	width      int
+	detailView bool
+	detailHost *hostEntry
 }
 
 func newModel(cidr string, total int) model {
@@ -80,6 +85,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 
 	case tea.KeyMsg:
+		// detail view keys
+		if m.detailView {
+			switch msg.String() {
+			case "esc", "backspace", "left":
+				m.detailView = false
+				m.detailHost = nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+
+		// table view keys
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
@@ -91,10 +109,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selected < len(m.hosts)-1 {
 				m.selected++
 			}
+		case "enter":
+			if m.selected < len(m.hosts) {
+				m.detailHost = m.hosts[m.selected]
+				m.detailView = true
+			}
 		}
 
 	case hostFoundMsg:
-		h := &hostEntry{ip: msg.host, banners: make(map[int]string)}
+		h := &hostEntry{
+			ip:        msg.host,
+			banners:   make(map[int]string),
+			firstSeen: time.Now(),
+		}
 		m.hosts = append(m.hosts, h)
 		m.byIP[msg.host] = h
 
@@ -109,6 +136,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hostDoneMsg:
 		if h, ok := m.byIP[msg.host]; ok {
 			h.done = true
+			h.scanTime = time.Since(h.firstSeen)
 			m.scanned++
 		}
 
@@ -124,13 +152,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	if m.detailView && m.detailHost != nil {
+		return m.detailViewRender()
+	}
+	return m.tableViewRender()
+}
+
+func (m model) tableViewRender() string {
 	var b strings.Builder
 
-	// header
 	b.WriteString(styleTitle.Render("netscope") + " " + styleDim.Render(version) +
 		"  " + styleCredit.Render("by "+author+" · "+repo) + "\n")
 
-	// progress
 	var progress string
 	if m.done {
 		progress = styleUp.Render("● done")
@@ -146,7 +179,6 @@ func (m model) View() string {
 	}
 	b.WriteString("  " + styleDim.Render("scanning "+m.cidr) + "  " + progress + "\n\n")
 
-	// table header
 	b.WriteString(fmt.Sprintf("  %-18s %-9s %-24s %s\n",
 		styleHeader.Render("HOST"),
 		styleHeader.Render("STATUS"),
@@ -208,9 +240,154 @@ func (m model) View() string {
 	}
 	b.WriteString(styleStatus.Render(fmt.Sprintf("  %d hosts · %d open ports · %.1fs",
 		len(m.hosts), portCount, m.elapsed.Seconds())) + "\n")
-	b.WriteString("  " + styleDim.Render("[↑↓] navigate   [q] quit") + "\n")
+	b.WriteString("  " + styleDim.Render("[↑↓] navigate   [enter] details   [q] quit") + "\n")
 
 	return b.String()
+}
+
+func (m model) detailViewRender() string {
+	h := m.detailHost
+	var b strings.Builder
+
+	// header
+	b.WriteString(styleTitle.Render("netscope") + " " + styleDim.Render(version) +
+		"  " + styleCredit.Render("by "+author+" · "+repo) + "\n\n")
+
+	// host title
+	b.WriteString(styleOS.Render("  "+h.ip) + "  " + styleUp.Render("● up") + "\n")
+
+	// metadata
+	b.WriteString(styleDim.Render(fmt.Sprintf("  first seen: %s   scanned in: %s",
+		h.firstSeen.Format("15:04:05"), h.scanTime.Round(time.Millisecond))) + "\n")
+
+	// OS guess
+	guess := guessOS(h)
+	if guess != "" {
+		b.WriteString(styleOS.Render("  likely OS: ") + guess + "\n")
+	}
+	b.WriteString("\n")
+
+	// ports table
+	b.WriteString(fmt.Sprintf("  %-8s %-14s %s\n",
+		styleHeader.Render("PORT"),
+		styleHeader.Render("SERVICE"),
+		styleHeader.Render("BANNER")))
+	b.WriteString("  " + styleDim.Render(strings.Repeat("─", 74)) + "\n")
+
+	if len(h.ports) == 0 {
+		b.WriteString(styleDim.Render("  no open ports") + "\n")
+	}
+
+	for _, p := range h.ports {
+		svc := portNames[p]
+		if svc == "" {
+			svc = "—"
+		}
+		banner := h.banners[p]
+		if banner == "" {
+			banner = "—"
+		}
+		if len(banner) > 44 {
+			banner = banner[:44] + "…"
+		}
+		b.WriteString(fmt.Sprintf("  %-8d %-14s %s\n",
+			p,
+			stylePort.Render(svc),
+			styleBanner.Render(banner)))
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + styleDim.Render("[esc] back   [q] quit") + "\n")
+
+	return b.String()
+}
+
+// guessOS looks at open ports + banners to make a best-effort guess
+func guessOS(h *hostEntry) string {
+	ports := make(map[int]bool)
+	for _, p := range h.ports {
+		ports[p] = true
+	}
+
+	banners := strings.ToLower(strings.Join(bannerValues(h), " "))
+
+	// Windows signals: RPC (135), NetBIOS (139), SMB (445), WinRM (5985), RDP (3389)
+	windowsScore := 0
+	if ports[135] {
+		windowsScore += 2
+	}
+	if ports[139] {
+		windowsScore += 2
+	}
+	if ports[445] {
+		windowsScore += 3
+	}
+	if ports[5985] {
+		windowsScore += 3
+	}
+	if ports[3389] {
+		windowsScore += 2
+	}
+
+	// Linux/Unix signals: SSH with OpenSSH banner
+	linuxScore := 0
+	if ports[22] && strings.Contains(banners, "openssh") {
+		linuxScore += 4
+	}
+	if strings.Contains(banners, "ubuntu") {
+		linuxScore += 5
+	}
+	if strings.Contains(banners, "debian") {
+		linuxScore += 5
+	}
+	if strings.Contains(banners, "centos") {
+		linuxScore += 5
+	}
+	if strings.Contains(banners, "nginx") {
+		linuxScore += 2
+	}
+	if strings.Contains(banners, "apache") {
+		linuxScore += 1
+	}
+
+	// macOS signals
+	macScore := 0
+	if strings.Contains(banners, "darwin") {
+		macScore += 5
+	}
+	if strings.Contains(banners, "mac os") {
+		macScore += 5
+	}
+
+	// Network device signals: DNS + web only, no SSH
+	if ports[53] && !ports[22] {
+		return "network device (router / switch)"
+	}
+
+	// Score compare
+	max := func(a, b, c int) (string, int) {
+		if a >= b && a >= c {
+			return "Windows", a
+		}
+		if b >= c {
+			return "Linux / Unix", b
+		}
+		return "macOS", c
+	}
+	label, score := max(windowsScore, linuxScore, macScore)
+
+	if score == 0 {
+		return ""
+	}
+	return label
+}
+
+func bannerValues(h *hostEntry) []string {
+	out := make([]string, 0, len(h.banners))
+	for _, v := range h.banners {
+		out = append(out, v)
+	}
+	return out
 }
 
 func runTUI(cidr string) {
