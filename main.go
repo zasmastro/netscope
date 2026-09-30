@@ -8,7 +8,7 @@ import (
 
 const (
 	name    = "netscope"
-	version = "0.1.0"
+	version = "0.2.0"
 	author  = "cortex"
 	repo    = "https://github.com/zasmastro/netscope"
 )
@@ -34,6 +34,13 @@ func main() {
 		}
 		runScan(os.Args[2])
 
+	case "tui":
+		if len(os.Args) < 3 {
+			fmt.Println("usage: netscope tui <cidr>")
+			os.Exit(1)
+		}
+		runTUI(os.Args[2])
+
 	case "version", "-v", "--version":
 		fmt.Printf("%s %s\nby %s — %s\n", name, version, author, repo)
 
@@ -52,15 +59,17 @@ func help() {
 by %s · %s
 
 Usage:
-  %s sweep <cidr>    find live hosts on a subnet (e.g. 192.168.1.0/24)
-  %s scan <host>     scan a single host's common ports
+  %s sweep <cidr>    find live hosts on a subnet (text output)
+  %s scan <host>     scan a single host's common ports (text output)
+  %s tui <cidr>      live dashboard — sweeps and scans with a UI
   %s version         print version
   %s help            this message
 
 Examples:
   %s sweep 192.168.1.0/24
   %s scan 192.168.1.1
-`, name, version, author, repo, name, name, name, name, name, name)
+  %s tui 192.168.1.0/24
+`, name, version, author, repo, name, name, name, name, name, name, name, name)
 }
 
 func runSweep(cidr string) {

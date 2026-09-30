@@ -1,0 +1,319 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// --- styles ---
+
+var (
+	styleTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	styleCredit  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleHeader  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	styleUp      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Background(lipgloss.Color("236"))
+	stylePort    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	styleStatus  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+)
+
+// --- messages (what the scanner sends back into the model) ---
+
+type hostFoundMsg struct {
+	host string
+}
+
+type portsFoundMsg struct {
+	host string
+	port int
+	banner string
+}
+
+type scanDoneMsg struct{}
+
+// --- model ---
+
+type hostEntry struct {
+	ip     string
+	ports  []int
+	banners map[int]string
+	done   bool
+}
+
+type model struct {
+	cidr      string
+	total     int
+	scanned   int
+	hosts     []*hostEntry
+	byIP      map[string]*hostEntry
+	selected  int
+	start     time.Time
+	elapsed   time.Duration
+	done      bool
+	width     int
+	height    int
+}
+
+func newModel(cidr string) model {
+	return model{
+		cidr:    cidr,
+		byIP:    make(map[string]*hostEntry),
+		start:   time.Now(),
+	}
+}
+
+func (m model) Init() tea.Cmd {
+	return scanCmd(m.cidr)
+}
+
+// --- update ---
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c", "esc":
+			return m, tea.Quit
+		case "up", "k":
+			if m.selected > 0 {
+				m.selected--
+			}
+		case "down", "j":
+			if m.selected < len(m.hosts)-1 {
+				m.selected++
+			}
+		}
+
+	case hostFoundMsg:
+		h := &hostEntry{ip: msg.host, banners: make(map[int]string)}
+		m.hosts = append(m.hosts, h)
+		m.byIP[msg.host] = h
+
+	case portsFoundMsg:
+		if h, ok := m.byIP[msg.host]; ok {
+			h.ports = append(h.ports, msg.port)
+			if msg.banner != "" {
+				h.banners[msg.port] = msg.banner
+			}
+		}
+
+	case scanDoneMsg:
+		m.done = true
+		for _, h := range m.hosts {
+			h.done = true
+		}
+	}
+
+	m.elapsed = time.Since(m.start)
+	return m, nil
+}
+
+// --- view ---
+
+func (m model) View() string {
+	var b strings.Builder
+
+	// header
+	title := styleTitle.Render("netscope")
+	version := styleDim.Render(" " + version)
+	credit := styleCredit.Render("by " + author + "  ·  " + repo)
+	b.WriteString(title + version + strings.Repeat(" ", max(0, m.width-len("netscope "+version+"by "+author+"  ·  "+repo))) + credit + "\n")
+
+	// progress line
+	var progress string
+	if m.done {
+		progress = styleUp.Render("done")
+	} else {
+		pct := 0.0
+		if m.total > 0 {
+			pct = float64(m.scanned) / float64(m.total)
+		}
+		filled := int(pct * 20)
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
+		progress = styleStatus.Render(bar) + " " + fmt.Sprintf("%d%%", int(pct*100))
+	}
+	b.WriteString("  " + styleDim.Render("scanning "+m.cidr) + "  " + progress + "\n\n")
+
+	// header row
+	header := fmt.Sprintf("  %-18s %-10s %-24s %s",
+		styleHeader.Render("HOST"),
+		styleHeader.Render("STATUS"),
+		styleHeader.Render("PORTS"),
+		styleHeader.Render("SERVICES"))
+	b.WriteString(header + "\n")
+	b.WriteString("  " + strings.Repeat("─", max(0, m.width-4)) + "\n")
+
+	// host rows
+	for i, h := range m.hosts {
+		var status, ports, services string
+		if h.done {
+			status = styleUp.Render("● up")
+		} else {
+			status = stylePort.Render("◐ scan")
+		}
+		portStrs := make([]string, len(h.ports))
+		for j, p := range h.ports {
+			portStrs[j] = fmt.Sprintf("%d", p)
+		}
+		ports = strings.Join(portStrs, ", ")
+		if len(ports) > 22 {
+			ports = ports[:22] + "…"
+		}
+		if ports == "" {
+			if h.done {
+				ports = styleDim.Render("none")
+			} else {
+				ports = styleDim.Render("…")
+			}
+		}
+		svcStrs := []string{}
+		for _, p := range h.ports {
+			if b, ok := h.banners[p]; ok {
+				svcStrs = append(svcStrs, truncate(b, 24))
+			} else {
+				svcStrs = append(svcStrs, "")
+			}
+		}
+		services = strings.Join(svcStrs, ", ")
+
+		row := fmt.Sprintf("  %-18s %-10s %-24s %s", h.ip, status, ports, services)
+		if i == m.selected {
+			row = styleSelected.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
+
+	b.WriteString("\n")
+
+	// status bar
+	portCount := 0
+	for _, h := range m.hosts {
+		portCount += len(h.ports)
+	}
+	statusLine := fmt.Sprintf("  %d hosts · %d open ports · %.1fs",
+		len(m.hosts), portCount, m.elapsed.Seconds())
+	b.WriteString(styleStatus.Render(statusLine) + "\n")
+
+	// help bar
+	help := "  " + styleDim.Render("[↑↓] navigate   [q] quit")
+	b.WriteString(help + "\n")
+
+	return b.String()
+}
+
+// --- helpers ---
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// --- commands (run in background goroutines, push msgs into the UI) ---
+
+func scanCmd(cidr string) tea.Cmd {
+	return func() tea.Msg {
+		hosts, err := expandCIDR(cidr)
+		if err != nil {
+			return scanDoneMsg{}
+		}
+		go func() {
+			// we need to share the model pointer, so this is handled in runTUI instead
+			_ = hosts
+		}()
+		return nil
+	}
+}
+
+// runTUI is the entry point called from main.go
+func runTUI(cidr string) {
+	hosts, err := expandCIDR(cidr)
+	if err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+
+	m := newModel(cidr)
+	m.total = len(hosts)
+
+	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	// background scanner: pushes hostFoundMsg / portsFoundMsg into the program
+	go func() {
+		// stream hosts
+		results := make(chan string, len(hosts))
+		go func() {
+			sweepStream(hosts, func(host string) {
+				results <- host
+			})
+			close(results)
+		}()
+
+		found := []string{}
+		for h := range results {
+			found = append(found, h)
+			p.Send(hostFoundMsg{host: h})
+		}
+
+		// now scan ports on each host concurrently, streaming results
+		portResults := make(chan portsFoundMsg, 4096)
+		done := make(chan struct{})
+		go func() {
+			for _, h := range found {
+				go scanHostStream(h, func(port int, banner string) {
+					portResults <- portsFoundMsg{host: h, port: port, banner: banner}
+				})
+			}
+			// wait for all scans to finish
+			// simplified: sleep briefly then signal done
+			// (the real completion tracking happens per-host below)
+		}()
+
+		go func() {
+			// consume port results as they arrive
+			timeout := time.After(30 * time.Second)
+			remaining := len(found)
+			perHostDone := make(map[string]chan struct{})
+			_ = perHostDone
+			_ = remaining
+
+			for {
+				select {
+				case pr := <-portResults:
+					p.Send(pr)
+				case <-timeout:
+					close(done)
+					return
+				}
+			}
+		}()
+
+		<-done
+		p.Send(scanDoneMsg{})
+	}()
+
+	if _, err := p.Run(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+}

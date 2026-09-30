@@ -196,3 +196,41 @@ func trim(s string) string {
 	}
 	return s[start:end]
 }
+
+func sweepStream(hosts []string, onFound func(string)) {
+	const workers = 128
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, h := range hosts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(host string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if isAlive(host) {
+				mu.Lock()
+				onFound(host)
+				mu.Unlock()
+			}
+		}(h)
+	}
+	wg.Wait()
+}
+
+func scanHostStream(host string, onPort func(port int, banner string)) {
+	var wg sync.WaitGroup
+
+	for _, p := range topPorts {
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			if tryConnect(host, port, 800*time.Millisecond) {
+				banner := grabBanner(host, port)
+				onPort(port, banner)
+			}
+		}(p)
+	}
+	wg.Wait()
+}
